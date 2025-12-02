@@ -1,4 +1,3 @@
-# ...existing code...
 import pygame
 import sys
 from collections import deque
@@ -11,8 +10,14 @@ FPS = 60
 
 MOVE_RANGE = 1
 PLAYER_MAX_HP = 20
+PLAYER_ATK = 5
+PLAYER_MANA = 100
+PLAYER_MANA_REGEN = 5
+PLAYER_HEAL_AMOUNT = 10
+PLAYER_HEAL_COST = 50
+RANGED_COST = 20
+
 ENEMY_MAX_HP = 20
-PLAYER_ATK = 2
 ENEMY_ATK = 1
 
 # Warna
@@ -58,7 +63,7 @@ def bfs_reachable(start, max_dist, obstacles):
 
 # ---------- Unit & AnimatedSprite (unchanged) ----------
 class Unit:
-    def __init__(self, x, y, hp, atk, team):
+    def __init__(self, x, y, hp, atk, team, mana=0, mana_regen=0):
         self.x = x
         self.y = y
         self.hp = hp
@@ -66,6 +71,9 @@ class Unit:
         self.atk = atk
         self.team = team
         self.alive = True
+        self.mana = mana
+        self.max_mana = mana
+        self.mana_regen = mana_regen
 
     def pos(self):
         return (self.x, self.y)
@@ -125,7 +133,7 @@ class Game:
 
     def reset(self, init_from_menu=False):
         # Basic units
-        self.player = Unit(1, GRID_H//2, PLAYER_MAX_HP, PLAYER_ATK, 'PLAYER')
+        self.player = Unit(1, GRID_H//2, PLAYER_MAX_HP, PLAYER_ATK, 'PLAYER', mana=PLAYER_MANA, mana_regen=PLAYER_MANA_REGEN)
 
         # stages fixed but start stage will be set from menu selection
         self.stages = ['Zombie', 'Skeleton', 'Enderman', 'Boss']
@@ -154,22 +162,27 @@ class Game:
 
     def spawn_enemy(self, index):
         etype = self.stages[index]
+        self.enemy_type = etype
         ex, ey = GRID_W-2, GRID_H//2
         if etype == 'Zombie':
-            ehp, eatk, emana, erange = 20, 1, 0, 1
+            ehp, eatk, emana, erange = 20, 3, 0, 1
         elif etype == 'Skeleton':
-            ehp, eatk, emana, erange = 18, 1, 0, 3
+            ehp, eatk, emana, erange = 10, 1, 0, 3  # damage varies by distance (handled in enemy_action)
         elif etype == 'Enderman':
-            ehp, eatk, emana, erange = 22, 2, 80, 1
+            ehp, eatk, emana, erange = 15, 4, 80, 3
         elif etype == 'Boss':
-            ehp, eatk, emana, erange = 35, 3, 100, 2
+            ehp, eatk, emana, erange = 30, 4, 100, 2
         else:
             ehp, eatk, emana, erange = ENEMY_MAX_HP, ENEMY_ATK, 50, 1
-        self.enemy = Unit(ex, ey, ehp, eatk, 'ENEMY')
+        self.enemy = Unit(ex, ey, ehp, eatk, 'ENEMY', mana=emana, mana_regen=5 if etype in ('Enderman','Boss') else 0)
         self.enemy.max_hp = ehp
         self.enemy.mana = emana
         self.enemy.range = erange
-        self.enemy_type = etype
+        # extra boss attributes
+        if etype == 'Boss':
+            self.enemy.ranged_atk = 2
+            self.enemy.heal_amount = 10
+            self.enemy.heal_cost = 50
         if hasattr(self, 'player'):
             self.units = [self.player, self.enemy]
         else:
@@ -225,7 +238,7 @@ class Game:
                         self.message = f'Mulai battle vs {self.enemy_type} menggunakan inference {self.forced_inference}.'
                 continue
 
-            # Gameplay input (existing behavior)
+            # Gameplay input (fixed: KEYDOWN-only handling separated from mouse)
             if event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_r,):
                     # return to main menu
@@ -243,8 +256,24 @@ class Game:
                     if self.turn == 'PLAYER' and self.menu_state == 'IN_GAME':
                         self.mode = 'ATTACK'
                         self.message = 'Mode ATTACK. Pilih petak bersebelahan untuk menyerang.'
+                if event.key in (pygame.K_f,):
+                    if self.turn == 'PLAYER' and self.menu_state == 'IN_GAME':
+                        self.mode = 'RANGED'
+                        self.message = f'Mode RANGED. Biaya {RANGED_COST} mana. Pilih tile arah untuk menyerang 2 tile.'
+                if event.key in (pygame.K_h,):
+                    if self.turn == 'PLAYER' and self.menu_state == 'IN_GAME':
+                        # instant heal if have mana
+                        if getattr(self.player, 'mana', 0) >= PLAYER_HEAL_COST:
+                            self.player.mana -= PLAYER_HEAL_COST
+                            self.player.hp = min(self.player.max_hp, self.player.hp + PLAYER_HEAL_AMOUNT)
+                            self.message = f'Player heal +{PLAYER_HEAL_AMOUNT}. HP sekarang {self.player.hp}.'
+                            self.end_turn()
+                        else:
+                            self.message = 'Mana tidak cukup untuk HEAL.'
                 if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     self.confirm_action()
+
+                # cursor movement via keys
                 dx = dy = 0
                 if event.key in (pygame.K_RIGHT, pygame.K_d): dx = 1
                 if event.key in (pygame.K_LEFT, pygame.K_a) and not pygame.key.get_mods() & pygame.KMOD_CTRL: dx = -1
@@ -255,6 +284,7 @@ class Game:
                     ny = max(0, min(GRID_H-1, self.cursor[1]+dy))
                     self.cursor = [nx, ny]
 
+            # Mouse input must be handled outside KEYDOWN to safely access event.button
             if event.type == pygame.MOUSEBUTTONDOWN and self.menu_state == 'IN_GAME':
                 mx, my = event.pos
                 if event.button == 1:
@@ -262,7 +292,7 @@ class Game:
                         gx = mx // TILE
                         gy = my // TILE
                         self.cursor = [gx, gy]
-                        if self.turn == 'PLAYER' and self.mode in ('MOVE', 'ATTACK'):
+                        if self.turn == 'PLAYER' and self.mode in ('MOVE', 'ATTACK', 'RANGED'):
                             self.confirm_action()
                 elif event.button == 3:
                     if self.turn == 'PLAYER' and my < GRID_H * TILE:
@@ -313,8 +343,37 @@ class Game:
                 self.end_turn()
             else:
                 self.message = 'Target tidak valid untuk ATTACK (harus bersebelahan dan musuh).'
+        elif self.mode == 'RANGED':
+            if getattr(self.player,'mana',0) < RANGED_COST:
+                self.message = 'Mana tidak cukup untuk RANGED.'
+                return
+            # compute direction vector from player to selected tile (snap to cardinal)
+            px,py = self.player.pos()
+            dx = cx - px
+            dy = cy - py
+            if abs(dx) > abs(dy):
+                step = (1 if dx>0 else -1, 0)
+            else:
+                step = (0, 1 if dy>0 else -1)
+            self.player.mana -= RANGED_COST
+            dmg = self.player.atk  # ranged uses same base atk
+            hits = []
+            nx, ny = px + step[0], py + step[1]
+            for i in range(2):  # up to 2 tiles
+                if not in_bounds(nx,ny): break
+                u = self.unit_at((nx,ny))
+                if u and u.team == 'ENEMY':
+                    u.take_damage(dmg)
+                    hits.append((nx,ny))
+                nx += step[0]; ny += step[1]
+            if hits:
+                self.message = f'Ranged hit at {hits}.'
+            else:
+                self.message = 'Ranged tidak mengenai musuh.'
+            self.mode = 'IDLE'
+            self.end_turn()
         else:
-            self.message = 'Tidak ada aksi dipilih. Tekan M atau A.'
+            self.message = 'Tidak ada aksi dipilih. Tekan M, A, F, atau H.'
 
     def end_turn(self):
         if self.menu_state != 'IN_GAME': return
@@ -331,8 +390,13 @@ class Game:
                 self.prepare_result()
                 self.menu_state = 'RESULT'
             else:
+                # regen mana for player and enemy if applicable
+                if hasattr(self.player, 'mana_regen'):
+                    self.player.mana = min(self.player.max_mana, self.player.mana + getattr(self.player,'mana_regen',0))
+                if hasattr(self.enemy, 'mana_regen') and getattr(self.enemy,'mana_regen',0)>0:
+                    self.enemy.mana = min(self.enemy.max_mana, self.enemy.mana + getattr(self.enemy,'mana_regen',0))
                 self.turn = 'PLAYER'
-                self.message = 'Giliran PLAYER. Tekan M untuk move, A untuk attack, E untuk end turn.'
+                self.message = 'Giliran PLAYER. Tekan M untuk move, A untuk attack, F untuk ranged, H untuk heal, E untuk end turn.'
         else:
             self.turn = 'PLAYER'
 
@@ -349,13 +413,14 @@ class Game:
         heal_act, do_heal = getattr(fuzzy, 'heal_priority_check')(etype, self.enemy.hp, getattr(self.enemy,'mana',0))
         if do_heal:
             tgt = getattr(fuzzy, 'pick_adjacent_for_farther')(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
-            # perform heal
+            # perform heal: use per-type heal values if present
             if tgt and self.unit_at(tgt) is None:
                 self.enemy.x, self.enemy.y = tgt
-            heal_amt = max(1, int(self.enemy.max_hp * 0.25))
+            heal_amt = getattr(self.enemy, 'heal_amount', max(1, int(self.enemy.max_hp * 0.25)))
+            mana_cost = getattr(self.enemy, 'heal_cost', 20)
             self.enemy.hp = min(self.enemy.max_hp, self.enemy.hp + heal_amt)
             if hasattr(self.enemy, 'mana'):
-                self.enemy.mana = max(0, getattr(self.enemy,'mana',0) - 20)
+                self.enemy.mana = max(0, getattr(self.enemy,'mana',0) - mana_cost)
             self.message = f'{etype} melakukan HEAL (+{heal_amt}). HP sekarang {self.enemy.hp}.'
             return
 
@@ -367,22 +432,32 @@ class Game:
 
         # 3) compute scores and pick inference
         scores = getattr(fuzzy, 'get_all_scores')(etype, self.player.hp, self.enemy.hp, 0, getattr(self.enemy,'mana',0), 5)
-        # choose inference: forced menu selection wins; otherwise default mapping per-type (keeps previous behavior)
-        infer_choice = self.forced_inference or ('mamdani' if etype in ('Enderman','Boss') else 'mamdani')
-        # ensure valid key
+        infer_choice = self.forced_inference or 'mamdani'
         infer_choice = infer_choice if infer_choice in scores else 'mamdani'
         score = scores[infer_choice]
 
-        # map to behavior and execute (reuse fuzzy helpers for picking tiles)
         behavior = getattr(fuzzy, 'map_fuzzy_score_to_behavior')(score, etype)
 
+        # RANGED behavior
         if behavior == "RANGED_ATTACK":
             rng = getattr(self.enemy, 'range', 2)
-            if manhattan(self.enemy.pos(), self.player.pos()) <= rng:
-                self.player.take_damage(self.enemy.atk)
+            dist = manhattan(self.enemy.pos(), self.player.pos())
+            if dist <= rng:
+                # damage rules per type
+                if etype == 'Skeleton':
+                    if dist == 1:
+                        dmg = 1
+                    elif dist == 2:
+                        dmg = 3
+                    else:
+                        dmg = 5
+                elif etype == 'Boss':
+                    dmg = getattr(self.enemy, 'ranged_atk', 2)
+                else:
+                    dmg = getattr(self.enemy, 'atk', 1)
+                self.player.take_damage(dmg)
                 self.message = f'{etype} melakukan serangan jarak jauh! Player HP: {max(0,self.player.hp)}.'
             else:
-                # move closer
                 tgt = getattr(fuzzy, 'pick_adjacent_for_closer')(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
                 if tgt:
                     self.enemy.x, self.enemy.y = tgt
@@ -391,46 +466,32 @@ class Game:
                     self.message = f'{etype} ingin serang jarak jauh tapi target terlalu jauh.'
             return
 
-        if behavior == "TELEPORT_CLOSE":
-            # use fuzzy helper to find adjacent free tile near player
-            for dx,dy in [(1,0),(-1,0),(0,1),(0,-1)]:
-                tx,ty = self.player.x+dx, self.player.y+dy
-                if 0 <= tx < GRID_W and 0 <= ty < GRID_H and (tx,ty) not in occupied:
-                    self.enemy.x, self.enemy.y = tx, ty
-                    self.message = f'{etype} teleport dekat ke {(tx,ty)}.'
-                    return
-            self.message = f'{etype} ingin teleport dekat tapi tidak ada ruang.'
-            return
-
-        if behavior == "TELEPORT_FAR":
-            tgt = getattr(fuzzy, 'pick_adjacent_for_farther')(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
-            if tgt:
-                self.enemy.x, self.enemy.y = tgt
-                self.message = f'{etype} teleport jauh ke {tgt}.'
-            else:
-                self.message = f'{etype} ingin teleport jauh tapi tidak ada ruang.'
-            return
-
-        if behavior == "MOVE_CLOSE":
+        # Movement / other behaviors: handle approach / retreat / fallback
+        if behavior in ("MOVE_TOWARDS","APPROACH","AGGRESSIVE","ATTACK_MELEE","MELEE"):
             tgt = getattr(fuzzy, 'pick_adjacent_for_closer')(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
             if tgt:
                 self.enemy.x, self.enemy.y = tgt
                 self.message = f'{etype} bergerak mendekat ke {tgt}.'
             else:
-                self.message = f'{etype} ingin mendekat tapi tidak menemukan petak.'
+                self.message = f'{etype} ingin mendekat tapi terhalang.'
             return
 
-        if behavior == "MOVE_RETREAT":
+        if behavior in ("MOVE_AWAY","RETREAT","FAR","DEFENSIVE"):
             tgt = getattr(fuzzy, 'pick_adjacent_for_farther')(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
             if tgt:
                 self.enemy.x, self.enemy.y = tgt
                 self.message = f'{etype} mundur ke {tgt}.'
             else:
-                self.message = f'{etype} ingin mundur tapi tidak menemukan petak.'
+                self.message = f'{etype} ingin mundur tapi terhalang.'
             return
 
-        self.message = f'{etype} menunggu.'
-
+        # Default fallback: coba mendekat agar AI tidak diam
+        tgt = getattr(fuzzy, 'pick_adjacent_for_closer')(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
+        if tgt:
+            self.enemy.x, self.enemy.y = tgt
+            self.message = f'{etype} bergerak (fallback) ke {tgt}.'
+        else:
+            self.message = f'{etype} memilih untuk diam.'
 
     # prepare result: gather inference scores and basic stats
     def prepare_result(self):
@@ -560,6 +621,15 @@ class Game:
         if self.menu_state == 'IN_GAME' and hasattr(self, 'enemy'):
             inf = self.font.render(f'Enemy: {self.enemy_type} | Inference: {self.forced_inference}', True, WHITE)
             self.screen.blit(inf, (WIDTH-320, GRID_H*TILE+8))
+        # mana bars/text
+        if hasattr(self, 'player'):
+            pm = getattr(self.player,'mana',0)
+            pm_txt = self.font.render(f'Player Mana: {pm}/{getattr(self.player,"max_mana",0)}', True, WHITE)
+            self.screen.blit(pm_txt, (8, GRID_H*TILE+58))
+        if hasattr(self,'enemy') and hasattr(self.enemy,'mana'):
+            em = getattr(self.enemy,'mana',0)
+            em_txt = self.font.render(f'Enemy Mana: {em}/{getattr(self.enemy,"max_mana",0)}', True, WHITE)
+            self.screen.blit(em_txt, (WIDTH-320, GRID_H*TILE+32))
 
     def update(self):
         if self.menu_state == 'IN_GAME':
