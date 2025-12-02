@@ -1,5 +1,5 @@
 # FP-KK-Fuzzy-Kelompok-10
-FP KK menggunakan fuzzy untuk bot dalam game untuk menentukan langkah keputusah bot dalam melawan player
+FP KK menggunakan fuzzy untuk bot dalam game untuk menentukan langkah keputusan bot dalam melawan player
 
 Anggota:
 - Muhammad Hadidan Nurhaunan | 5054241016
