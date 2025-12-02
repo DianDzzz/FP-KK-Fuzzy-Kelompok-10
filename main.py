@@ -20,6 +20,15 @@ RANGED_COST = 20
 ENEMY_MAX_HP = 20
 ENEMY_ATK = 1
 
+# vertical offset untuk sprite zombie
+ZOMBIE_Y_OFFSET = 27
+# vertical offset untuk sprite skeleton
+SKELETON_Y_OFFSET = 27
+# vertical offset untuk sprite enderman
+ENDERMAN_Y_OFFSET = 22
+ENDERMAN_X_OFFSET = 20
+BOSS_Y_OFFSET = 1
+
 # Warna
 WHITE = (255,255,255)
 BLACK = (0,0,0)
@@ -61,6 +70,23 @@ def bfs_reachable(start, max_dist, obstacles):
             q.append(((nx,ny), d+1))
     return results
 
+# helper: scale image preserving aspect ratio and center it into target size
+def scale_preserve(surface, target_size):
+    tw, th = target_size
+    ow, oh = surface.get_size()
+    if oh == 0:
+        return pygame.Surface(target_size, pygame.SRCALPHA)
+    # scale to match target height (keep aspect)
+    scale = th / oh
+    nw = max(1, int(ow * scale))
+    nh = max(1, int(oh * scale))
+    scaled = pygame.transform.smoothscale(surface, (nw, nh))
+    out = pygame.Surface((tw, th), pygame.SRCALPHA)
+    x = (tw - nw) // 2
+    y = (th - nh) // 2
+    out.blit(scaled, (x, y))
+    return out
+
 # ---------- Unit & AnimatedSprite (unchanged) ----------
 class Unit:
     def __init__(self, x, y, hp, atk, team, mana=0, mana_regen=0):
@@ -85,10 +111,10 @@ class Unit:
 
 class AnimatedSprite:
     def __init__(self, image_files, size):
-        self.frames = [
-            pygame.transform.scale(pygame.image.load(img).convert_alpha(), size)
-            for img in image_files
-        ]
+        self.frames = []
+        for img_path in image_files:
+            img = pygame.image.load(img_path).convert_alpha()
+            self.frames.append(scale_preserve(img, size))
         self.index = 0
         self.timer = 0
         self.speed = 8
@@ -118,6 +144,84 @@ class Game:
         ]
         self.player_idle_anim = AnimatedSprite(idle_frames, (TILE+30, TILE+30))
         self.player_mana = 100
+
+        # --- load zombie sprite-sheet (6 horizontal frames) ---
+        try:
+            sheet = pygame.image.load("assets/zombie/Idle.png").convert_alpha()
+            # known frames: 6 horizontal frames
+            n_frames = 6
+            frame_w = sheet.get_width() // n_frames
+            frame_h = sheet.get_height()
+            self.zombie_frames = []
+            for i in range(n_frames):
+                sub = sheet.subsurface((i*frame_w, 0, frame_w, frame_h))
+                # scale zombie frames preserving aspect ratio & center into target box
+                self.zombie_frames.append(scale_preserve(sub, (TILE+30, TILE+30)))
+            self.zombie_anim_index = 0
+            self.zombie_anim_timer = 0
+            self.zombie_anim_speed = 8   # lower -> faster
+        except Exception:
+            self.zombie_frames = []
+            self.zombie_anim_index = 0
+            self.zombie_anim_timer = 0
+            self.zombie_anim_speed = 8
+
+        # --- load skeleton sprite-sheet (assume 8 horizontal frames) ---
+        try:
+            skel_sheet = pygame.image.load("assets/skeleton/Idle.png").convert_alpha()
+            n_skel = 7
+            skel_fw = skel_sheet.get_width() // n_skel
+            skel_fh = skel_sheet.get_height()
+            self.skeleton_frames = []
+            for i in range(n_skel):
+                sub = skel_sheet.subsurface((i*skel_fw, 0, skel_fw, skel_fh))
+                self.skeleton_frames.append(scale_preserve(sub, (TILE+30, TILE+30)))
+            self.skeleton_anim_index = 0
+            self.skeleton_anim_timer = 0
+            self.skeleton_anim_speed = 8
+        except Exception:
+            self.skeleton_frames = []
+            self.skeleton_anim_index = 0
+            self.skeleton_anim_timer = 0
+            self.skeleton_anim_speed = 8
+
+        # --- load enderman sprite-sheet (14 horizontal frames) ---
+        try:
+            end_sheet = pygame.image.load("assets/enderman/Idle.png").convert_alpha()
+            n_end = 14
+            end_fw = end_sheet.get_width() // n_end
+            end_fh = end_sheet.get_height()
+            self.enderman_frames = []
+            for i in range(n_end):
+                sub = end_sheet.subsurface((i*end_fw, 0, end_fw, end_fh))
+                self.enderman_frames.append(scale_preserve(sub, (TILE+30, TILE+30)))
+            self.enderman_anim_index = 0
+            self.enderman_anim_timer = 0
+            self.enderman_anim_speed = 6
+        except Exception:
+            self.enderman_frames = []
+            self.enderman_anim_index = 0
+            self.enderman_anim_timer = 0
+            self.enderman_anim_speed = 6
+
+        # --- load boss sprite-sheet (8 horizontal frames) ---
+        try:
+            boss_sheet = pygame.image.load("assets/boss/Idle.png").convert_alpha()
+            n_boss = 8
+            boss_fw = boss_sheet.get_width() // n_boss
+            boss_fh = boss_sheet.get_height()
+            self.boss_frames = []
+            for i in range(n_boss):
+                sub = boss_sheet.subsurface((i*boss_fw, 0, boss_fw, boss_fh))
+                self.boss_frames.append(scale_preserve(sub, (TILE+100, TILE+100)))
+            self.boss_anim_index = 0
+            self.boss_anim_timer = 0
+            self.boss_anim_speed = 7
+        except Exception:
+            self.boss_frames = []
+            self.boss_anim_index = 0
+            self.boss_anim_timer = 0
+            self.boss_anim_speed = 7
 
         # Menu / selection state
         self.menu_state = 'MAIN'   # MAIN -> SELECT_INFERENCE -> IN_GAME -> RESULT
@@ -515,7 +619,7 @@ class Game:
 
     # --- Drawing functions: menu + game + result ---
     def draw_main_menu(self):
-        self.screen.fill(BLACK)
+        self.screen.fill(DARK)
         title = self.bigfont.render('MAIN MENU - Pilih Lawan (UP/DOWN, Enter)', True, WHITE)
         self.screen.blit(title, (WIDTH//2 - 220, 20))
         for i, opt in enumerate(self.enemy_options):
@@ -526,7 +630,7 @@ class Game:
         self.screen.blit(hint, (8, HEIGHT-28))
 
     def draw_infer_menu(self):
-        self.screen.fill(BLACK)
+        self.screen.fill(DARK)
         title = self.bigfont.render(f'Pilih Inference untuk {self.enemy_options[self.selected_enemy_index]}', True, WHITE)
         self.screen.blit(title, (WIDTH//2 - 260, 20))
         for i, opt in enumerate(self.inference_options):
@@ -537,7 +641,7 @@ class Game:
         self.screen.blit(hint, (8, HEIGHT-28))
 
     def draw_result(self):
-        self.screen.fill(BLACK)
+        self.screen.fill(DARK)
         title = self.bigfont.render('Hasil Pertarungan', True, WHITE)
         self.screen.blit(title, (WIDTH//2 - 120, 16))
         if not self.result_info:
@@ -577,17 +681,39 @@ class Game:
                 self.screen.blit(img, rect)
             else:
                 etype = getattr(self, 'enemy_type', None)
-                if etype == 'Zombie':
-                    ecolor = GREEN
-                elif etype == 'Skeleton':
-                    ecolor = WHITE
-                elif etype == 'Enderman':
-                    ecolor = PURPLE
-                elif etype == 'Boss':
-                    ecolor = LIGHT_BLUE
+                if etype == 'Zombie' and getattr(self, 'zombie_frames', None):
+                    frame = self.zombie_frames[self.zombie_anim_index % len(self.zombie_frames)]
+                    # naikkan sprite sedikit agar tidak menyentuh tanah (sesuaikan ZOMBIE_Y_OFFSET jika perlu)
+                    rect = frame.get_rect(center=(cx, cy - ZOMBIE_Y_OFFSET))
+                    self.screen.blit(frame, rect)
+                elif etype == 'Skeleton' and getattr(self, 'skeleton_frames', None):
+                    frame = self.skeleton_frames[self.skeleton_anim_index % len(self.skeleton_frames)]
+                    # naikkan sprite sedikit agar tidak menyentuh tanah (sesuaikan SKELETON_Y_OFFSET jika perlu)
+                    rect = frame.get_rect(center=(cx, cy - SKELETON_Y_OFFSET))
+                    self.screen.blit(frame, rect)
+                elif etype == 'Enderman' and getattr(self, 'enderman_frames', None):
+                    frame = self.enderman_frames[self.enderman_anim_index % len(self.enderman_frames)]
+                    # naikkan sedikit agar posisi ground terlihat benar
+                    # geser sedikit ke kanan menggunakan ENDERMAN_X_OFFSET
+                    rect = frame.get_rect(center=(cx + ENDERMAN_X_OFFSET, cy - ENDERMAN_Y_OFFSET))
+                    self.screen.blit(frame, rect)
+                elif etype == 'Boss' and getattr(self, 'boss_frames', None):
+                    frame = self.boss_frames[self.boss_anim_index % len(self.boss_frames)]
+                    # Boss berada di tengah; sedikit angkat untuk jaga-jaga
+                    rect = frame.get_rect(center=(cx, cy - BOSS_Y_OFFSET))
+                    self.screen.blit(frame, rect)
                 else:
-                    ecolor = RED
-                pygame.draw.rect(self.screen, ecolor, (u.x*TILE+12, u.y*TILE+12, TILE-24, TILE-24))
+                     if etype == 'Zombie':
+                         ecolor = GREEN
+                     elif etype == 'Skeleton':
+                         ecolor = WHITE
+                     elif etype == 'Enderman':
+                         ecolor = PURPLE
+                     elif etype == 'Boss':
+                         ecolor = LIGHT_BLUE
+                     else:
+                         ecolor = RED
+                     pygame.draw.rect(self.screen, ecolor, (u.x*TILE+12, u.y*TILE+12, TILE-24, TILE-24))
             hp_ratio = max(0, u.hp) / u.max_hp
             bar_w = int(TILE * 0.8)
             bx = u.x*TILE + (TILE-bar_w)//2
@@ -645,6 +771,30 @@ class Game:
                     self.victory = True
                     self.message = 'SEMUA MUSUH DIKALAHKAN! Tekan R untuk restart.'
             self.player_idle_anim.update()
+            # advance zombie animation if present and current enemy is zombie
+            if getattr(self, 'zombie_frames', None) and getattr(self, 'enemy_type', None) == 'Zombie' and getattr(self, 'enemy', None) and self.enemy.alive:
+                self.zombie_anim_timer += 1
+                if self.zombie_anim_timer >= self.zombie_anim_speed:
+                    self.zombie_anim_timer = 0
+                    self.zombie_anim_index = (self.zombie_anim_index + 1) % len(self.zombie_frames)
+            # advance skeleton animation if present and current enemy is skeleton
+            if getattr(self, 'skeleton_frames', None) and getattr(self, 'enemy_type', None) == 'Skeleton' and getattr(self, 'enemy', None) and self.enemy.alive:
+                self.skeleton_anim_timer += 1
+                if self.skeleton_anim_timer >= self.skeleton_anim_speed:
+                    self.skeleton_anim_timer = 0
+                    self.skeleton_anim_index = (self.skeleton_anim_index + 1) % len(self.skeleton_frames)
+            # advance enderman animation if present and current enemy is enderman
+            if getattr(self, 'enderman_frames', None) and getattr(self, 'enemy_type', None) == 'Enderman' and getattr(self, 'enemy', None) and self.enemy.alive:
+                self.enderman_anim_timer += 1
+                if self.enderman_anim_timer >= self.enderman_anim_speed:
+                    self.enderman_anim_timer = 0
+                    self.enderman_anim_index = (self.enderman_anim_index + 1) % len(self.enderman_frames)
+            # advance boss animation if present and current enemy is boss
+            if getattr(self, 'boss_frames', None) and getattr(self, 'enemy_type', None) == 'Boss' and getattr(self, 'enemy', None) and self.enemy.alive:
+                self.boss_anim_timer += 1
+                if self.boss_anim_timer >= self.boss_anim_speed:
+                    self.boss_anim_timer = 0
+                    self.boss_anim_index = (self.boss_anim_index + 1) % len(self.boss_frames)
 
     def run(self):
         while True:
@@ -658,7 +808,7 @@ class Game:
                 self.draw_result()
             else:
                 # in-game
-                self.screen.fill(BLACK)
+                self.screen.fill(DARK)
                 self.draw_grid()
                 self.draw_units()
                 self.draw_cursor()
