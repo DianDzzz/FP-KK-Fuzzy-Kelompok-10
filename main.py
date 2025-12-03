@@ -1,5 +1,6 @@
 import pygame
 import sys
+import fuzzy
 from collections import deque
 
 # ---------- Konfigurasi ----------
@@ -233,6 +234,11 @@ class Game:
         self.selected_enemy_index = 0
         self.result_info = {}   # store result summary
 
+        # pilih apakah enemy akan pakai fuzzy; default True
+        self.use_fuzzy = True
+        # ensure selector defaults
+        self.menu_sel_use_fuzzy = 0
+
         self.reset(init_from_menu=True)
 
     def reset(self, init_from_menu=False):
@@ -287,6 +293,8 @@ class Game:
             self.enemy.ranged_atk = 2
             self.enemy.heal_amount = 10
             self.enemy.heal_cost = 50
+        # --- NEW: init heal cooldown so AI won't spam heal/teleport ---
+        self.enemy.heal_cooldown = 0
         if hasattr(self, 'player'):
             self.units = [self.player, self.enemy]
         else:
@@ -314,13 +322,41 @@ class Game:
                     elif event.key in (pygame.K_DOWN,):
                         self.menu_sel_enemy = (self.menu_sel_enemy + 1) % len(self.enemy_options)
                     elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                        # go to inference selection
+                        # go to next menu: ALWAYS pilih pakai fuzzy atau tidak untuk semua enemy
                         self.selected_enemy_index = self.menu_sel_enemy
-                        self.menu_state = 'SELECT_INFER'
-                        self.menu_sel_infer = 0
-                        self.message = f'Pilih inference untuk {self.enemy_options[self.selected_enemy_index]}.'
+                        self.menu_state = 'SELECT_USE_FUZZY'
+                        # pilihan default Yes
+                        self.menu_sel_use_fuzzy = 0  # 0 -> Yes, 1 -> No
+                        self.message = 'Gunakan Fuzzy untuk musuh ini? (UP/DOWN, Enter)'
                 continue
 
+            # menu untuk memilih apakah pakai fuzzy (semua enemy)
+            if self.menu_state == 'SELECT_USE_FUZZY':
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_UP, pygame.K_DOWN):
+                        self.menu_sel_use_fuzzy = (self.menu_sel_use_fuzzy + 1) % 2
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        self.use_fuzzy = (self.menu_sel_use_fuzzy == 0)
+                        self.stage_index = self.selected_enemy_index
+                        # jika memilih pakai fuzzy, lanjut ke pilih inference
+                        if self.use_fuzzy:
+                            self.menu_state = 'SELECT_INFER'
+                            self.menu_sel_infer = 0
+                            self.message = f'Pilih inference untuk {self.enemy_options[self.selected_enemy_index]}.'
+                        else:
+                            # langsung spawn enemy dan mulai game, NON-FUZZY
+                            self.spawn_enemy(self.stage_index)
+                            self.units = [self.player, self.enemy]
+                            self.turn = 'PLAYER'
+                            self.cursor = [0,0]
+                            self.mode = 'IDLE'
+                            self.move_targets = set()
+                            self.selected_target = None
+                            self.menu_state = 'IN_GAME'
+                            self.message = f'Mulai battle vs {self.enemy_type} (NON-FUZZY).'
+                continue
+
+            # menu untuk memilih metode inference (setelah pilih pakai fuzzy)
             if self.menu_state == 'SELECT_INFER':
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_UP,):
@@ -499,19 +535,138 @@ class Game:
                     self.player.mana = min(self.player.max_mana, self.player.mana + getattr(self.player,'mana_regen',0))
                 if hasattr(self.enemy, 'mana_regen') and getattr(self.enemy,'mana_regen',0)>0:
                     self.enemy.mana = min(self.enemy.max_mana, self.enemy.mana + getattr(self.enemy,'mana_regen',0))
+                # --- NEW: decrement heal cooldown after enemy acted ---
+                if hasattr(self.enemy, 'heal_cooldown') and self.enemy.heal_cooldown > 0:
+                    self.enemy.heal_cooldown -= 1
                 self.turn = 'PLAYER'
                 self.message = 'Giliran PLAYER. Tekan M untuk move, A untuk attack, F untuk ranged, H untuk heal, E untuk end turn.'
         else:
             self.turn = 'PLAYER'
 
-    # --- enemy_action: now honors forced_inference if set (menu choice) ---
+    # --- enemy_action: now supports deterministic behaviors when use_fuzzy == False ---
     def enemy_action(self):
         if not self.enemy.alive or not self.player.alive:
             return
-        import fuzzy
+
+        etype = getattr(self, 'enemy_type', 'Zombie')
+
+        # common occupied set
         occupied = {u.pos() for u in self.units if u.alive}
         occupied.discard(self.enemy.pos())
-        etype = getattr(self, 'enemy_type', 'Zombie')
+        dist = manhattan(self.enemy.pos(), self.player.pos())
+
+        # If user disabled fuzzy, use deterministic rules per enemy
+        if not getattr(self, 'use_fuzzy', True):
+            # ZOMBIE: BFS -> move toward; if adjacent attack
+            if etype == 'Zombie':
+                if dist == 1:
+                    self.player.take_damage(self.enemy.atk)
+                    self.message = f'Zombie menyerang! Player HP: {max(0,self.player.hp)}.'
+                    return
+                path = self.find_path(self.enemy.pos(), self.player.pos(), occupied)
+                if path and len(path) > 1:
+                    next_step = path[1]
+                    if self.unit_at(next_step) is None:
+                        self.enemy.x, self.enemy.y = next_step
+                        self.message = f'Zombie (NON-FUZZY) bergerak ke {next_step}.'
+                    else:
+                        self.message = 'Zombie (NON-FUZZY) terhalang.'
+                else:
+                    tgt = fuzzy.pick_adjacent_for_closer(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
+                    if tgt:
+                        self.enemy.x, self.enemy.y = tgt
+                        self.message = f'Zombie (NON-FUZZY) bergerak (fallback) ke {tgt}.'
+                    else:
+                        self.message = 'Zombie (NON-FUZZY) memilih untuk diam.'
+                return
+
+            # SKELETON: prioritaskan ranged. If adjacent -> try to retreat; else if within range -> ranged attack; else approach.
+            if etype == 'Skeleton':
+                rng = getattr(self.enemy, 'range', 3)
+                if dist == 1:
+                    # try to retreat to maintain distance for ranged attack
+                    tgt = fuzzy.pick_adjacent_for_farther(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
+                    if tgt and self.unit_at(tgt) is None:
+                        self.enemy.x, self.enemy.y = tgt
+                        self.message = f'Skeleton mundur untuk jarak jauh ke {tgt}.'
+                        return
+                    # fallback: melee attack
+                    self.player.take_damage(self.enemy.atk)
+                    self.message = f'Skeleton menyerang melee! Player HP: {max(0,self.player.hp)}.'
+                    return
+                if dist <= rng:
+                    # ranged damage scheme (keputusan sederhana)
+                    if dist == 2:
+                        dmg = 3
+                    elif dist >= 3:
+                        dmg = 5
+                    else:
+                        dmg = getattr(self.enemy, 'atk', 1)
+                    self.player.take_damage(dmg)
+                    self.message = f'Skeleton melakukan serangan jarak jauh! Player HP: {max(0,self.player.hp)}.'
+                    return
+                # else approach
+                path = self.find_path(self.enemy.pos(), self.player.pos(), occupied)
+                if path and len(path) > 1:
+                    next_step = path[1]
+                    if self.unit_at(next_step) is None:
+                        self.enemy.x, self.enemy.y = next_step
+                        self.message = f'Skeleton (NON-FUZZY) bergerak mendekat ke {next_step}.'
+                        return
+                self.message = 'Skeleton (NON-FUZZY) tidak bisa mendekat.'
+                return
+
+            # ENDERMAN: approach and attack; if low hp -> teleport/mundur + heal, then resume attacking
+            if etype == 'Enderman':
+                # heal-priority: only if cooldown expired
+                heal_act, do_heal = fuzzy.heal_priority_check('Enderman', self.enemy.hp, getattr(self.enemy,'mana',0))
+                if do_heal and getattr(self.enemy, 'heal_cooldown', 0) <= 0:
+                    tgt = fuzzy.pick_adjacent_for_farther(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
+                    if tgt and self.unit_at(tgt) is None:
+                        self.enemy.x, self.enemy.y = tgt
+                    heal_amt = getattr(self.enemy, 'heal_amount', max(1, int(self.enemy.max_hp * 0.25)))
+                    mana_cost = getattr(self.enemy, 'heal_cost', 20)
+                    self.enemy.hp = min(self.enemy.max_hp, self.enemy.hp + heal_amt)
+                    if hasattr(self.enemy, 'mana'):
+                        self.enemy.mana = max(0, getattr(self.enemy,'mana',0) - mana_cost)
+                    # set cooldown so Enderman won't teleport/heal again immediately
+                    self.enemy.heal_cooldown = 2
+                    self.message = f'Enderman (NON-FUZZY) teleport & heal +{heal_amt}. HP sekarang {self.enemy.hp}.'
+                    return
+                # Normal behavior: only melee if adjacent; otherwise approach (no ranged)
+                if dist == 1:
+                    self.player.take_damage(self.enemy.atk)
+                    self.message = f'Enderman menyerang melee! Player HP: {max(0,self.player.hp)}.'
+                    return
+                # approach via BFS
+                path = self.find_path(self.enemy.pos(), self.player.pos(), occupied)
+                if path and len(path) > 1 and self.unit_at(path[1]) is None:
+                    self.enemy.x, self.enemy.y = path[1]
+                    self.message = f'Enderman (NON-FUZZY) bergerak mendekat ke {path[1]}.'
+                else:
+                    self.message = 'Enderman (NON-FUZZY) tidak bisa mendekat.'
+                return
+
+            # BOSS: can ranged, heal by moving backward (no teleport). Similar heal-priority as before.
+            if etype == 'Boss':
+                # heal only if cooldown expired
+                heal_act, do_heal = fuzzy.heal_priority_check('Boss', self.enemy.hp, getattr(self.enemy,'mana',0))
+                if do_heal and getattr(self.enemy, 'heal_cooldown', 0) <= 0:
+                    tgt = fuzzy.pick_adjacent_for_farther(self.enemy.pos(), self.player.pos(), occupied, GRID_W, GRID_H)
+                    if tgt and self.unit_at(tgt) is None:
+                        self.enemy.x, self.enemy.y = tgt
+                    heal_amt = getattr(self.enemy, 'heal_amount', 10)
+                    mana_cost = getattr(self.enemy, 'heal_cost', 50)
+                    self.enemy.hp = min(self.enemy.max_hp, self.enemy.hp + heal_amt)
+                    if hasattr(self.enemy, 'mana'):
+                        self.enemy.mana = max(0, getattr(self.enemy,'mana',0) - mana_cost)
+                    # set longer cooldown to avoid frequent heals
+                    self.enemy.heal_cooldown = 4
+                    self.message = f'Boss (NON-FUZZY) mundur & heal +{heal_amt}. HP sekarang {self.enemy.hp}.'
+                    return
+
+        # --- fallback: FUZZY behavior (existing path) ---
+        # use module-level 'fuzzy' (imported at top); occupied already computed earlier
 
         # 1) heal-priority
         heal_act, do_heal = getattr(fuzzy, 'heal_priority_check')(etype, self.enemy.hp, getattr(self.enemy,'mana',0))
@@ -640,6 +795,23 @@ class Game:
         hint = self.font.render('Enter untuk mulai. R untuk kembali.', True, GRAY)
         self.screen.blit(hint, (8, HEIGHT-28))
 
+    def draw_use_fuzzy_menu(self):
+        """
+        Menu untuk memilih apakah Zombie menggunakan fuzzy atau tidak.
+        Di-handle setelah MAIN ketika user memilih 'Zombie'.
+        """
+        self.screen.fill(DARK)
+        title = self.bigfont.render('Gunakan Fuzzy untuk Zombie?', True, WHITE)
+        self.screen.blit(title, (WIDTH//2 - 200, 20))
+        opts = ['Yes','No']
+        sel = getattr(self, 'menu_sel_use_fuzzy', 0)
+        for i, opt in enumerate(opts):
+            color = YELLOW if i == sel else WHITE
+            txt = self.bigfont.render(opt, True, color)
+            self.screen.blit(txt, (WIDTH//2 - 40, 100 + i*36))
+        hint = self.font.render('UP/DOWN pilih, Enter untuk konfirmasi. Jika No, Zombie pakai BFS+Manhattan.', True, GRAY)
+        self.screen.blit(hint, (8, HEIGHT-28))
+
     def draw_result(self):
         self.screen.fill(DARK)
         title = self.bigfont.render('Hasil Pertarungan', True, WHITE)
@@ -747,6 +919,10 @@ class Game:
         if self.menu_state == 'IN_GAME' and hasattr(self, 'enemy'):
             inf = self.font.render(f'Enemy: {self.enemy_type} | Inference: {self.forced_inference}', True, WHITE)
             self.screen.blit(inf, (WIDTH-320, GRID_H*TILE+8))
+            # tambahkan status fuzzy yes/no
+            fuzzy_txt = 'Fuzzy: Yes' if getattr(self, 'use_fuzzy', True) else 'Fuzzy: No'
+            f_txt = self.font.render(fuzzy_txt, True, WHITE)
+            self.screen.blit(f_txt, (WIDTH-320, GRID_H*TILE+32))
         # mana bars/text
         if hasattr(self, 'player'):
             pm = getattr(self.player,'mana',0)
@@ -796,14 +972,39 @@ class Game:
                     self.boss_anim_timer = 0
                     self.boss_anim_index = (self.boss_anim_index + 1) % len(self.boss_frames)
 
+    # helper pathfinder: BFS mengembalikan path dari start ke goal (list of nodes) atau None
+    def find_path(self, start, goal, obstacles):
+        from collections import deque
+        q = deque()
+        q.append((start, [start]))
+        visited = {start}
+        while q:
+            (node, path) = q.popleft()
+            if node == goal:
+                return path
+            x,y = node
+            for dx,dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nx,ny = x+dx, y+dy
+                nn = (nx,ny)
+                if not in_bounds(nx,ny): continue
+                if nn in visited: continue
+                if nn in obstacles and nn != goal: continue
+                visited.add(nn)
+                q.append((nn, path + [nn]))
+        return None
+
     def run(self):
         while True:
             self.handle_input()
             self.update()
             if self.menu_state == 'MAIN':
                 self.draw_main_menu()
+            elif self.menu_state == 'SELECT_USE_FUZZY':
+                self.draw_use_fuzzy_menu()
             elif self.menu_state == 'SELECT_INFER':
                 self.draw_infer_menu()
+            elif self.menu_state == 'INPUT_INTERVAL':
+                self.draw_interval_menu()
             elif self.menu_state == 'RESULT':
                 self.draw_result()
             else:

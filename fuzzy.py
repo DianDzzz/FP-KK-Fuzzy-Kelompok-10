@@ -160,48 +160,94 @@ def fallback_score_no_mana(hp_p, hp_b, cd_p):
         score -= 40
     return max(0, min(100, score))
 
-# -------------------- three inference implementations --------------------
+# --- Helper: get membership functions based on intervals ---
+def get_membership_with_mana(intervals=None):
+    # intervals: dict with keys for each membership, values are interval lists
+    # fallback to default intervals if not provided
+    if intervals is None:
+        return {
+            'hp_p_low': hp_p_low, 'hp_p_med': hp_p_med, 'hp_p_high': hp_p_high,
+            'hp_b_low': hp_b_low, 'hp_b_med': hp_b_med, 'hp_b_high': hp_b_high,
+            'mana_p_low': mana_p_low, 'mana_p_med': mana_p_med, 'mana_p_high': mana_p_high,
+            'mana_b_low': mana_b_low, 'mana_b_med': mana_b_med, 'mana_b_high': mana_b_high,
+            'cd_ready': cd_ready, 'cd_mid': cd_mid, 'cd_long': cd_long
+        }
+    # build membership arrays from intervals
+    memb = {}
+    memb['hp_p_low'] = fuzz.trapmf(x_hp, intervals.get('hp_p_low', [0,0,20,50]))
+    memb['hp_p_med'] = fuzz.trapmf(x_hp, intervals.get('hp_p_med', [20,40,60,80]))
+    memb['hp_p_high'] = fuzz.trapmf(x_hp, intervals.get('hp_p_high', [50,80,100,100]))
+    memb['hp_b_low'] = fuzz.trapmf(x_hp, intervals.get('hp_b_low', [0,0,30,60]))
+    memb['hp_b_med'] = fuzz.trapmf(x_hp, intervals.get('hp_b_med', [30,50,70,90]))
+    memb['hp_b_high'] = fuzz.trapmf(x_hp, intervals.get('hp_b_high', [70,90,100,100]))
+    memb['mana_p_low'] = fuzz.trimf(x_mana, intervals.get('mana_p_low', [0,0,40]))
+    memb['mana_p_med'] = fuzz.trimf(x_mana, intervals.get('mana_p_med', [20,50,80]))
+    memb['mana_p_high'] = fuzz.trimf(x_mana, intervals.get('mana_p_high', [60,100,100]))
+    memb['mana_b_low'] = fuzz.trimf(x_mana, intervals.get('mana_b_low', [0,0,30]))
+    memb['mana_b_med'] = fuzz.trimf(x_mana, intervals.get('mana_b_med', [30,50,70]))
+    memb['mana_b_high'] = fuzz.trimf(x_mana, intervals.get('mana_b_high', [70,100,100]))
+    memb['cd_ready'] = fuzz.trapmf(x_cd, intervals.get('cd_ready', [0,0,1,3]))
+    memb['cd_mid'] = fuzz.trapmf(x_cd, intervals.get('cd_mid', [2,4,6,8]))
+    memb['cd_long'] = fuzz.trapmf(x_cd, intervals.get('cd_long', [6,9,10,10]))
+    return memb
 
-def _compute_degrees_with_mana(hp_p_val, hp_b_val, mana_p_val, mana_b_val, cd_p_val):
-    """Return dict of membership degrees for antecedents (requires SKFUZZY)."""
+def get_membership_no_mana(intervals=None):
+    if intervals is None:
+        return {
+            'hp_l': hp_l, 'hp_m': hp_m, 'hp_h': hp_h,
+            'cd_r': cd_r, 'cd_m': cd_m, 'cd_l': cd_l
+        }
+    memb = {}
+    memb['hp_l'] = fuzz.trapmf(x_hp, intervals.get('hp_l', [0,0,20,50]))
+    memb['hp_m'] = fuzz.trapmf(x_hp, intervals.get('hp_m', [20,40,60,80]))
+    memb['hp_h'] = fuzz.trapmf(x_hp, intervals.get('hp_h', [50,80,100,100]))
+    memb['cd_r'] = fuzz.trapmf(x_cd, intervals.get('cd_r', [0,0,1,3]))
+    memb['cd_m'] = fuzz.trapmf(x_cd, intervals.get('cd_m', [2,4,6,8]))
+    memb['cd_l'] = fuzz.trapmf(x_cd, intervals.get('cd_l', [6,9,10,10]))
+    return memb
+
+# --- Modified degree computation to use custom intervals ---
+def _compute_degrees_with_mana(hp_p_val, hp_b_val, mana_p_val, mana_b_val, cd_p_val, intervals=None):
     if not SKFUZZY:
         return None
+    memb = get_membership_with_mana(intervals)
     deg = {}
-    deg['hp_p_low'] = fuzz.interp_membership(x_hp, hp_p_low, hp_p_val)
-    deg['hp_p_med'] = fuzz.interp_membership(x_hp, hp_p_med, hp_p_val)
-    deg['hp_p_high'] = fuzz.interp_membership(x_hp, hp_p_high, hp_p_val)
-    deg['hp_b_low'] = fuzz.interp_membership(x_hp, hp_b_low, hp_b_val)
-    deg['hp_b_med'] = fuzz.interp_membership(x_hp, hp_b_med, hp_b_val)
-    deg['hp_b_high'] = fuzz.interp_membership(x_hp, hp_b_high, hp_b_val)
-    deg['mana_p_low'] = fuzz.interp_membership(x_mana, mana_p_low, mana_p_val)
-    deg['mana_p_med'] = fuzz.interp_membership(x_mana, mana_p_med, mana_p_val)
-    deg['mana_p_high'] = fuzz.interp_membership(x_mana, mana_p_high, mana_p_val)
-    deg['mana_b_low'] = fuzz.interp_membership(x_mana, mana_b_low, mana_b_val)
-    deg['mana_b_med'] = fuzz.interp_membership(x_mana, mana_b_med, mana_b_val)
-    deg['mana_b_high'] = fuzz.interp_membership(x_mana, mana_b_high, mana_b_val)
-    deg['cd_ready'] = fuzz.interp_membership(x_cd, cd_ready, cd_p_val)
-    deg['cd_mid'] = fuzz.interp_membership(x_cd, cd_mid, cd_p_val)
-    deg['cd_long'] = fuzz.interp_membership(x_cd, cd_long, cd_p_val)
+    deg['hp_p_low'] = fuzz.interp_membership(x_hp, memb['hp_p_low'], hp_p_val)
+    deg['hp_p_med'] = fuzz.interp_membership(x_hp, memb['hp_p_med'], hp_p_val)
+    deg['hp_p_high'] = fuzz.interp_membership(x_hp, memb['hp_p_high'], hp_p_val)
+    deg['hp_b_low'] = fuzz.interp_membership(x_hp, memb['hp_b_low'], hp_b_val)
+    deg['hp_b_med'] = fuzz.interp_membership(x_hp, memb['hp_b_med'], hp_b_val)
+    deg['hp_b_high'] = fuzz.interp_membership(x_hp, memb['hp_b_high'], hp_b_val)
+    deg['mana_p_low'] = fuzz.interp_membership(x_mana, memb['mana_p_low'], mana_p_val)
+    deg['mana_p_med'] = fuzz.interp_membership(x_mana, memb['mana_p_med'], mana_p_val)
+    deg['mana_p_high'] = fuzz.interp_membership(x_mana, memb['mana_p_high'], mana_p_val)
+    deg['mana_b_low'] = fuzz.interp_membership(x_mana, memb['mana_b_low'], mana_b_val)
+    deg['mana_b_med'] = fuzz.interp_membership(x_mana, memb['mana_b_med'], mana_b_val)
+    deg['mana_b_high'] = fuzz.interp_membership(x_mana, memb['mana_b_high'], mana_b_val)
+    deg['cd_ready'] = fuzz.interp_membership(x_cd, memb['cd_ready'], cd_p_val)
+    deg['cd_mid'] = fuzz.interp_membership(x_cd, memb['cd_mid'], cd_p_val)
+    deg['cd_long'] = fuzz.interp_membership(x_cd, memb['cd_long'], cd_p_val)
     return deg
 
-def _compute_degrees_no_mana(hp_p_val, hp_b_val, cd_p_val):
+def _compute_degrees_no_mana(hp_p_val, hp_b_val, cd_p_val, intervals=None):
     if not SKFUZZY:
         return None
+    memb = get_membership_no_mana(intervals)
     deg = {}
-    deg['hp_p_low'] = fuzz.interp_membership(x_hp, hp_l, hp_p_val)
-    deg['hp_p_med'] = fuzz.interp_membership(x_hp, hp_m, hp_p_val)
-    deg['hp_p_high'] = fuzz.interp_membership(x_hp, hp_h, hp_p_val)
-    deg['hp_b_low'] = fuzz.interp_membership(x_hp, hp_l, hp_b_val)
-    deg['hp_b_med'] = fuzz.interp_membership(x_hp, hp_m, hp_b_val)
-    deg['hp_b_high'] = fuzz.interp_membership(x_hp, hp_h, hp_b_val)
-    deg['cd_ready'] = fuzz.interp_membership(x_cd, cd_r, cd_p_val)
-    deg['cd_mid'] = fuzz.interp_membership(x_cd, cd_m, cd_p_val)
-    deg['cd_long'] = fuzz.interp_membership(x_cd, cd_l, cd_p_val)
+    deg['hp_p_low'] = fuzz.interp_membership(x_hp, memb['hp_l'], hp_p_val)
+    deg['hp_p_med'] = fuzz.interp_membership(x_hp, memb['hp_m'], hp_p_val)
+    deg['hp_p_high'] = fuzz.interp_membership(x_hp, memb['hp_h'], hp_p_val)
+    deg['hp_b_low'] = fuzz.interp_membership(x_hp, memb['hp_l'], hp_b_val)
+    deg['hp_b_med'] = fuzz.interp_membership(x_hp, memb['hp_m'], hp_b_val)
+    deg['hp_b_high'] = fuzz.interp_membership(x_hp, memb['hp_h'], hp_b_val)
+    deg['cd_ready'] = fuzz.interp_membership(x_cd, memb['cd_r'], cd_p_val)
+    deg['cd_mid'] = fuzz.interp_membership(x_cd, memb['cd_m'], cd_p_val)
+    deg['cd_long'] = fuzz.interp_membership(x_cd, memb['cd_l'], cd_p_val)
     return deg
 
-# Mamdani scorers (existing behavior)
-def mamdani_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p):
-    if SKFUZZY:
+# --- Modified scorers: add intervals param, use custom degrees if provided ---
+def mamdani_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p, intervals=None):
+    if SKFUZZY and intervals is None:
         try:
             bot_simulasi.input['HP_Player'] = hp_p
             bot_simulasi.input['HP_Bot'] = hp_b
@@ -212,11 +258,14 @@ def mamdani_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p):
             return float(bot_simulasi.output['Action_Strength'])
         except Exception:
             return fallback_score_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p)
+    elif SKFUZZY and intervals is not None:
+        # Use Sugeno as fallback for custom intervals (skfuzzy ControlSystem can't use custom intervals directly)
+        return sugeno_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p, intervals)
     else:
         return fallback_score_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p)
 
-def mamdani_no_mana(hp_p, hp_b, cd_p):
-    if SKFUZZY:
+def mamdani_no_mana(hp_p, hp_b, cd_p, intervals=None):
+    if SKFUZZY and intervals is None:
         try:
             sim_z.input['HP_Player_Z'] = hp_p
             sim_z.input['HP_Bot_Z'] = hp_b
@@ -225,34 +274,31 @@ def mamdani_no_mana(hp_p, hp_b, cd_p):
             return float(sim_z.output['Action_Strength_Z'])
         except Exception:
             return fallback_score_no_mana(hp_p, hp_b, cd_p)
+    elif SKFUZZY and intervals is not None:
+        return sugeno_no_mana(hp_p, hp_b, cd_p, intervals)
     else:
         return fallback_score_no_mana(hp_p, hp_b, cd_p)
 
-# Sugeno approximator: weighted average of rule consequents (centroid singletons)
-def sugeno_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p):
+def sugeno_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p, intervals=None):
     if not SKFUZZY:
-        # fallback: perturb fallback_score to simulate different inference
         base = fallback_score_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p)
-        return max(0, min(100, base * 0.95))  # slightly different
-    deg = _compute_degrees_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p)
-    # singleton centroids for outputs
+        return max(0, min(100, base * 0.95))
+    deg = _compute_degrees_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p, intervals)
     centroids = {'weak': 20.0, 'mid': 50.0, 'strong': 80.0}
     num = 0.0; den = 0.0
     for conds, out in rule_specs:
-        # compute firing strength = min of involved antecedents
         vals = [deg.get(c, 0.0) for c in conds]
         firing = min(vals) if vals else 0.0
         num += firing * centroids[out]
         den += firing
     return float(num/den) if den > 1e-9 else float(fallback_score_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p))
 
-def sugeno_no_mana(hp_p, hp_b, cd_p):
+def sugeno_no_mana(hp_p, hp_b, cd_p, intervals=None):
     if not SKFUZZY:
         base = fallback_score_no_mana(hp_p, hp_b, cd_p)
         return max(0, min(100, base * 0.95))
-    deg = _compute_degrees_no_mana(hp_p, hp_b, cd_p)
+    deg = _compute_degrees_no_mana(hp_p, hp_b, cd_p, intervals)
     centroids = {'weak': 20.0, 'mid': 50.0, 'strong': 80.0}
-    # use subset of rules_z approximated as rule_specs_z
     rule_specs_z = [
         (['hp_b_high','cd_long'], 'strong'),
         (['hp_p_low'], 'strong'),
@@ -267,32 +313,30 @@ def sugeno_no_mana(hp_p, hp_b, cd_p):
         den += firing
     return float(num/den) if den > 1e-9 else float(fallback_score_no_mana(hp_p,hp_b,cd_p))
 
-# Tsukamoto approximator: invert monotonic consequents to get z per rule then weighted average
-def tsukamoto_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p):
+def tsukamoto_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p, intervals=None):
     if not SKFUZZY:
         base = fallback_score_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p)
         return max(0, min(100, base * 1.05))
-    deg = _compute_degrees_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p)
+    deg = _compute_degrees_with_mana(hp_p, hp_b, mana_p, mana_b, cd_p, intervals)
     num = 0.0; den = 0.0
     for conds, out in rule_specs:
         vals = [deg.get(c, 0.0) for c in conds]
         firing = min(vals) if vals else 0.0
-        # invert monotonic consequent approx:
         if out == 'weak':
-            z = 40.0 * (1.0 - firing)       # range 0..40
+            z = 40.0 * (1.0 - firing)
         elif out == 'mid':
-            z = 40.0 + 20.0 * firing       # range 40..60
-        else:  # 'strong'
-            z = 60.0 + 40.0 * firing       # range 60..100
+            z = 40.0 + 20.0 * firing
+        else:
+            z = 60.0 + 40.0 * firing
         num += firing * z
         den += firing
-    return float(num/den) if den > 1e-9 else float(mamdani_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p))
+    return float(num/den) if den > 1e-9 else float(mamdani_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p,intervals))
 
-def tsukamoto_no_mana(hp_p, hp_b, cd_p):
+def tsukamoto_no_mana(hp_p, hp_b, cd_p, intervals=None):
     if not SKFUZZY:
         base = fallback_score_no_mana(hp_p, hp_b, cd_p)
         return max(0, min(100, base * 1.05))
-    deg = _compute_degrees_no_mana(hp_p, hp_b, cd_p)
+    deg = _compute_degrees_no_mana(hp_p, hp_b, cd_p, intervals)
     rule_specs_z = [
         (['hp_b_high','cd_long'], 'strong'),
         (['hp_p_low'], 'strong'),
@@ -311,58 +355,59 @@ def tsukamoto_no_mana(hp_p, hp_b, cd_p):
             z = 60.0 + 40.0 * firing
         num += firing * z
         den += firing
-    return float(num/den) if den > 1e-9 else float(mamdani_no_mana(hp_p,hp_b,cd_p))
+    return float(num/den) if den > 1e-9 else float(mamdani_no_mana(hp_p,hp_b,cd_p,intervals))
 
 # -------------------- aggregator helpers --------------------
 
-def get_all_scores(bot_type, hp_p, hp_b, mana_p, mana_b, cd_p):
+def get_all_scores(bot_type, hp_p, hp_b, mana_p, mana_b, cd_p, intervals=None):
     """
     Return dict with three inference scores: {'mamdani':..,'sugeno':..,'tsukamoto':..}
     Use no-mana versions for Zombie/Skeleton; with-mana for Enderman/Boss.
     """
     if bot_type in ('Zombie','Skeleton'):
-        m = mamdani_no_mana(hp_p,hp_b,cd_p)
-        s = sugeno_no_mana(hp_p,hp_b,cd_p)
-        t = tsukamoto_no_mana(hp_p,hp_b,cd_p)
+        m = mamdani_no_mana(hp_p,hp_b,cd_p,intervals)
+        s = sugeno_no_mana(hp_p,hp_b,cd_p,intervals)
+        t = tsukamoto_no_mana(hp_p,hp_b,cd_p,intervals)
     else:
-        m = mamdani_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p)
-        s = sugeno_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p)
-        t = tsukamoto_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p)
+        m = mamdani_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p,intervals)
+        s = sugeno_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p,intervals)
+        t = tsukamoto_with_mana(hp_p,hp_b,mana_p,mana_b,cd_p,intervals)
     return {'mamdani': float(m), 'sugeno': float(s), 'tsukamoto': float(t)}
 
 # Backwards-compatible wrappers (keep default behaviour using Mamdani scorers)
-def get_bot_action_score(hp_p_val, hp_b_val, mana_p_val, mana_b_val, cd_p_val):
-    return mamdani_with_mana(hp_p_val, hp_b_val, mana_p_val, mana_b_val, cd_p_val)
+def get_bot_action_score(hp_p_val, hp_b_val, mana_p_val, mana_b_val, cd_p_val, intervals=None):
+    return mamdani_with_mana(hp_p_val, hp_b_val, mana_p_val, mana_b_val, cd_p_val, intervals)
 
-def get_zombie_action_score(hp_p_val, hp_b_val, cd_p_val):
-    return mamdani_no_mana(hp_p_val, hp_b_val, cd_p_val)
+def get_zombie_action_score(hp_p_val, hp_b_val, cd_p_val, intervals=None):
+    return mamdani_no_mana(hp_p_val, hp_b_val, cd_p_val, intervals)
 
-# existing high-level API unchanged: map -> behavior + actions
+# map fuzzy numeric score to high-level behavior strings used by main.py
 def map_fuzzy_score_to_behavior(score, bot_type):
-    if score < 40:
-        strength = "Weak"
-    elif score < 70:
-        strength = "Mid"
-    else:
-        strength = "Strong"
+	# score: 0-100
+	if score < 40:
+		strength = "Weak"
+	elif score < 70:
+		strength = "Mid"
+	else:
+		strength = "Strong"
 
-    if bot_type == "Zombie":
-        if strength == "Weak":   return "MOVE_RETREAT"
-        if strength == "Mid":    return "MOVE_CLOSE"
-        if strength == "Strong": return "MOVE_CLOSE"
-    if bot_type == "Skeleton":
-        if strength == "Weak":   return "MOVE_RETREAT"
-        if strength == "Mid":    return "RANGED_ATTACK"
-        if strength == "Strong": return "RANGED_ATTACK"
-    if bot_type == "Enderman":
-        if strength == "Weak":   return "TELEPORT_FAR"
-        if strength == "Mid":    return "TELEPORT_CLOSE"
-        if strength == "Strong": return "TELEPORT_CLOSE"
-    if bot_type == "Boss":
-        if strength == "Weak":   return "MOVE_RETREAT"
-        if strength == "Mid":    return "RANGED_ATTACK"
-        if strength == "Strong": return "MOVE_CLOSE"
-    return "WAIT"
+	if bot_type == "Zombie":
+		if strength == "Weak":   return "MOVE_RETREAT"
+		if strength == "Mid":    return "MOVE_CLOSE"
+		if strength == "Strong": return "MOVE_CLOSE"
+	if bot_type == "Skeleton":
+		if strength == "Weak":   return "MOVE_RETREAT"
+		if strength == "Mid":    return "RANGED_ATTACK"
+		if strength == "Strong": return "RANGED_ATTACK"
+	if bot_type == "Enderman":
+		if strength == "Weak":   return "TELEPORT_FAR"
+		if strength == "Mid":    return "TELEPORT_CLOSE"
+		if strength == "Strong": return "TELEPORT_CLOSE"
+	if bot_type == "Boss":
+		if strength == "Weak":   return "MOVE_RETREAT"
+		if strength == "Mid":    return "RANGED_ATTACK"
+		if strength == "Strong": return "MOVE_CLOSE"
+	return "WAIT"
 
 # --- Movement & utility helpers (dipakai oleh get_final_action) ---
 def manhattan(a, b):
@@ -396,13 +441,16 @@ def pick_adjacent_for_farther(zpos, ppos, occupied, grid_w, grid_h):
 
 # --- Heal-priority interrupt (Enderman / Boss) ---
 def heal_priority_check(bot_type, hp_b_val, mana_b_val):
-    if bot_type == "Enderman":
-        if hp_b_val <= 40 and mana_b_val >= 30:
-            return ("HEAL", True)
-    if bot_type == "Boss":
-        if hp_b_val <= 50 and mana_b_val >= 40:
-            return ("HEAL", True)
-    return (None, False)
+	# Enderman: heal when quite low and have moderate mana
+	if bot_type == "Enderman":
+		if hp_b_val <= 40 and mana_b_val >= 30:
+			return ("HEAL", True)
+	# Boss: be more willing to retreat/heal — tighten condition to avoid frequent heals
+	if bot_type == "Boss":
+		# changed: require lower HP and reasonable mana so boss won't heal too often
+		if hp_b_val <= 45 and mana_b_val >= 40:
+			return ("HEAL", True)
+	return (None, False)
 
 # keep get_final_action / wrappers from previous file (unchanged)
 def get_final_action(bot_type, hp_p, hp_b, mana_p, mana_b, cd_p,
@@ -457,7 +505,40 @@ def get_zombie_action(hp_player, hp_zombie, mana_player, mana_zombie, cd_player,
     return get_final_action('Zombie', hp_player, hp_zombie, 0, 0, cd_player,
                             zombie_pos, player_pos, occupied_positions, grid_w, grid_h)
 
+# --- ADDED: separate action wrappers per entity to avoid mixing behaviors/scores ---
+def get_skeleton_action(hp_player, hp_skel, mana_player, mana_skel, cd_player,
+                        skel_pos, player_pos, occupied_positions,
+                        grid_w=8, grid_h=6):
+    return get_final_action('Skeleton', hp_player, hp_skel, 0, 0, cd_player,
+                            skel_pos, player_pos, occupied_positions, grid_w, grid_h)
+
+def get_enderman_action(hp_player, hp_end, mana_player, mana_end, cd_player,
+                        end_pos, player_pos, occupied_positions,
+                        grid_w=8, grid_h=6):
+    return get_final_action('Enderman', hp_player, hp_end, mana_player, mana_end, cd_player,
+                            end_pos, player_pos, occupied_positions, grid_w, grid_h)
+
+def get_boss_action(hp_player, hp_boss, mana_player, mana_boss, cd_player,
+                    boss_pos, player_pos, occupied_positions,
+                    grid_w=8, grid_h=6):
+    return get_final_action('Boss', hp_player, hp_boss, mana_player, mana_boss, cd_player,
+                            boss_pos, player_pos, occupied_positions, grid_w, grid_h)
+
+# update dispatcher: keep backward-compatible get_bot_action but route to specific functions
 def get_bot_action(bot_type, hp_player, hp_bot, mana_player, mana_bot, cd_player,
                    bot_pos, player_pos, occupied_positions, grid_w=8, grid_h=6):
+    if bot_type == 'Zombie':
+        return get_zombie_action(hp_player, hp_bot, mana_player, mana_bot, cd_player,
+                                 bot_pos, player_pos, occupied_positions, grid_w, grid_h)
+    if bot_type == 'Skeleton':
+        return get_skeleton_action(hp_player, hp_bot, mana_player, mana_bot, cd_player,
+                                   bot_pos, player_pos, occupied_positions, grid_w, grid_h)
+    if bot_type == 'Enderman':
+        return get_enderman_action(hp_player, hp_bot, mana_player, mana_bot, cd_player,
+                                   bot_pos, player_pos, occupied_positions, grid_w, grid_h)
+    if bot_type == 'Boss':
+        return get_boss_action(hp_player, hp_bot, mana_player, mana_bot, cd_player,
+                               bot_pos, player_pos, occupied_positions, grid_w, grid_h)
+    # fallback generic
     return get_final_action(bot_type, hp_player, hp_bot, mana_player, mana_bot, cd_player,
                             bot_pos, player_pos, occupied_positions, grid_w, grid_h)
